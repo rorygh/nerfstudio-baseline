@@ -101,3 +101,34 @@ finds the resulting `config.yml`, then runs `ns-eval` into
   otherwise silently upgrades both, breaking CUDA match and a
   Pillow-internals hook nerfstudio's image loader relies on. Full story:
   SETUP-PLAN.md section 2.
+
+## Timings, vs. published numbers
+
+All "ours" figures are from this session's actual runs (RTX 3090,
+torch 2.8.0+cu128) -- see SETUP-PLAN.md for the raw logs.
+
+| Step | Ours | Published reference | Source |
+|---|---|---|---|
+| COLMAP feature extraction (35 img, GPU) | ~7s | GPU SIFT extraction cited at ~45k keypoints/sec/image vs. ~2k/sec on CPU -- consistent with ours being fast, though not a direct apples-to-apples number | [pycolmap 2026 benchmarks](https://johal.in/colmap-python-bindings-feature-matching-bundle-adjustment-2026/) |
+| COLMAP matching (35 img, exhaustive, GPU) | ~23s | no published small-scene (<50 img) benchmark found | -- |
+| COLMAP bundle adjustment + refine (35 img) | ~6m29s (the long pole: ~70% of total SfM time) | not separately benchmarked at this scale in what's published | -- |
+| splatfacto training, 30k iterations | ~13 min (292 images, RTX 3090) | RTX 3060: ~25 min; RTX 3090: ~20 min (100 photos, 1080p); RTX 2080 Ti: ~10-15 min; RTX 4090: ~8 min | [3DGS/nerfstudio 2026 field guide](https://www.youngju.dev/blog/culture/2026-05-16-3d-gaussian-splatting-photogrammetry-2026-nerfstudio-postshot-luma-genie-polycam-apple-object-capture-realitycapture-deep-dive.en) |
+| Original 3DGS reference impl (INRIA, not gsplat), Mip-NeRF360 | n/a -- splatfacto uses gsplat, not the original CUDA code | 18m40s | [graphdeco-inria/gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting) |
+| gsplat vs. original 3DGS impl | consistent with the faster time above | gsplat claims up to 4x less training memory and up to 15% less training time on Mip-NeRF360 vs. the official implementation | community writeups citing the gsplat project |
+
+Two things stand out:
+
+- **Ours (~13 min, 292 images) beats the closest published RTX 3090 number
+  (~20 min, only 100 images)** despite using ~3x more images. Plausible
+  contributors, not fully isolated: the COLMAP dataparser auto-picked a 2x
+  image downscale factor for bonsai (`Using image downscale factor of 2` in
+  the training log -- see SETUP-PLAN.md), which directly cuts
+  per-iteration rasterization cost; gsplat has also kept improving since
+  whatever version that blog benchmark used. Not a controlled comparison,
+  just the two closest numbers available.
+- **COLMAP's bundle adjustment dominates SfM time** even at just 35 images
+  (~70% of the ~7 min total) -- feature extraction and matching are both
+  GPU-accelerated and fast, but the mapper's incremental bundle adjustment
+  is CPU-bound (Ceres solver) and doesn't benefit from the GPU at all. Worth
+  planning around if a future scene has hundreds of images instead of 35 --
+  this step, not GPU matching, is what will actually dominate wall time.
