@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 # the C-internals `pil_to_numpy` (nerfstudio/data/utils/data_utils.py) relies
 # on. Freeze torch/vision/audio to whatever this base image already ships
 # *before* installing, and pin Pillow to a version confirmed to still work.
+COPY . .
 RUN pip install --upgrade pip setuptools && \
     pip freeze | grep -E '^torch(vision|audio)?==' > /tmp/pinned-constraints.txt && \
     echo "Pillow==10.4.0" >> /tmp/pinned-constraints.txt && \
