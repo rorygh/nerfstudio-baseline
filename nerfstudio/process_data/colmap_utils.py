@@ -17,6 +17,7 @@ Tools supporting the execution of COLMAP and preparation of COLMAP-based dataset
 """
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
 
@@ -89,6 +90,21 @@ def get_vocab_tree() -> Path:
     return vocab_tree_filename
 
 
+def _use_gpu_flag(colmap_cmd: str, subcommand: str, old_prefix: str, new_prefix: str) -> str:
+    """COLMAP renamed --SiftExtraction.use_gpu/--SiftMatching.use_gpu to
+    --FeatureExtraction.use_gpu/--FeatureMatching.use_gpu at some point (confirmed present
+    under the new name in COLMAP 4.0.4's conda-forge build; the old name errors out there
+    with "unrecognised option"). Probe the actual binary's --help instead of guessing a
+    version cutoff, since we don't know exactly which release changed it.
+    """
+    # COLMAP prints its usage/help text to stderr, not stdout -- run_command() only
+    # captures stdout, so use subprocess directly here.
+    result = subprocess.run(f"{colmap_cmd} {subcommand} -h", shell=True, capture_output=True, check=False)
+    help_text = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    prefix = new_prefix if f"--{new_prefix}.use_gpu" in help_text else old_prefix
+    return f"--{prefix}.use_gpu"
+
+
 def run_colmap(
     image_dir: Path,
     colmap_dir: Path,
@@ -126,7 +142,7 @@ def run_colmap(
         f"--image_path {image_dir}",
         "--ImageReader.single_camera 1",
         f"--ImageReader.camera_model {camera_model.value}",
-        f"--SiftExtraction.use_gpu {int(gpu)}",
+        f"{_use_gpu_flag(colmap_cmd, 'feature_extractor', 'SiftExtraction', 'FeatureExtraction')} {int(gpu)}",
     ]
     if camera_mask_path is not None:
         feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
@@ -140,7 +156,7 @@ def run_colmap(
     feature_matcher_cmd = [
         f"{colmap_cmd} {matching_method}_matcher",
         f"--database_path {colmap_dir / 'database.db'}",
-        f"--SiftMatching.use_gpu {int(gpu)}",
+        f"{_use_gpu_flag(colmap_cmd, f'{matching_method}_matcher', 'SiftMatching', 'FeatureMatching')} {int(gpu)}",
     ]
     if matching_method == "vocab_tree":
         vocab_tree_filename = get_vocab_tree()

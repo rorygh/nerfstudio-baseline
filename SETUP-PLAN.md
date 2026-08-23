@@ -59,6 +59,41 @@ which exact base image is used, since the root cause in each case is
   all three call sites -- safe since these are always our own
   self-generated checkpoints, never third-party ones.
 
+## 2b. New-scene COLMAP path (`ns-process-data`) -- verified issues and fixes
+
+Not needed for the bonsai mission itself (its sparse model ships pre-built --
+step 3), but validated separately since a future scene may not have one.
+Installed COLMAP via `Dockerfile.runpod`'s exact micromamba recipe
+(`colmap=4.0.4` from conda-forge) on the same pod as step 0, then ran
+`ns-process-data images --data <raw_photos> --output-dir <out>` end to end.
+Two real bugs found and fixed, both a mismatch between this pinned COLMAP
+version and what `nerfstudio/process_data/colmap_utils.py` was written
+against:
+
+- **CLI flag rename.** `--SiftExtraction.use_gpu` / `--SiftMatching.use_gpu`
+  don't exist in COLMAP 4.0.4 (`unrecognised option`) -- renamed to
+  `--FeatureExtraction.use_gpu` / `--FeatureMatching.use_gpu` (both default
+  to GPU-on already). Fixed by probing the installed `colmap`'s own `-h`
+  output at runtime rather than hardcoding a version cutoff, since the exact
+  COLMAP release that renamed them isn't known -- see `_use_gpu_flag()` in
+  `colmap_utils.py`. Note COLMAP prints help/usage to stderr, not stdout.
+- **Default matching method (`vocab_tree`) is broken on this COLMAP
+  version.** It downloads a legacy flann-based vocab tree index, but COLMAP
+  switched to faiss-based indexes in May 2025 -- the pinned 4.0.4 build
+  aborts trying to read it (`Check failed: file_version == 1 || file_version
+  == 2`), and this build doesn't even ship `vocab_tree_upgrader` to convert
+  it. Workaround: pass `--matching-method exhaustive` (fine for
+  test/small-scene image counts; reconsider if a future scene has enough
+  images that exhaustive's O(n^2) matching gets slow -- `sequential` is the
+  other option that doesn't need a vocab tree).
+
+Confirmed working end to end (GPU feature extraction + GPU exhaustive
+matching + mapper + intrinsics refinement, `colmap/sparse/0` +
+`transforms.json` produced) on 35 images with real overlap -- 35/35
+registered. (A first attempt using every-8th-frame from bonsai's orbit
+capture only registered 2/35 -- not a bug, just insufficient overlap between
+such widely-spaced views; contiguous frames fixed it.)
+
 ## 3. Get bonsai data onto the pod
 
 Preferred: reuse the bonsai COLMAP sparse model DynamicReconstruction already
@@ -99,10 +134,29 @@ Two ways, not mutually exclusive:
   `runpodctl receive <code>` locally (same tool used for the bonsai data in
   step 3) -- or `scp -r`. Then just open `results/renders/` and
   `results/psnr.json` locally.
-- **Interactive viewer**: `ns-viewer --load-config <config.yml>` on the pod
-  (path printed at the end of `run_bonsai.sh`), then either expose pod port
-  `7007` as a TCP port in the RunPod dashboard, or `ssh -L 7007:localhost:7007
-  <pod>` and open `http://localhost:7007`.
+- **Interactive viewer**: `TORCHDYNAMO_DISABLE=1 ns-viewer --load-config
+  <config.yml>` on the pod (path printed at the end of `run_bonsai.sh`), then
+  either expose pod port `7007` as a TCP port in the RunPod dashboard, or
+  `ssh -L 7007:localhost:7007 <pod>` and open `http://localhost:7007`. The
+  `TORCHDYNAMO_DISABLE=1` is required: `splatfacto.py`'s `get_viewmat` is
+  `@torch_compile()`-wrapped, and under torch 2.8 the viewer's
+  render-cancellation exception (thrown mid-compile whenever the camera
+  moves, to abort a stale in-flight render) surfaces as an uncaught
+  `InternalTorchDynamoError` instead of propagating normally -- every render
+  after the first crashes and the viewer looks frozen. Training itself never
+  hits this path (no camera-interrupt during training), so this only affects
+  the standalone viewer.
+
+  Two harmless cosmetic bugs to expect, both because standalone `ns-viewer`
+  never attaches a live `Trainer` (unlike the viewer during an active
+  `ns-train` run): the step counter stays at 0 regardless of which
+  checkpoint step is actually loaded (`viewer.py`'s `update_scene` returns
+  before pushing the step to the GUI, since it's called once before any
+  client connects), and the "Pause Training" button is always shown
+  (`train_btn_state` is derived from `self.trainer is None`, which is always
+  true here, defaulting to `"training"`). Neither affects correctness --
+  confirmed separately via `ns-eval`'s PSNR/rendered images that the correct
+  checkpoint is what's actually loaded and rendered.
 
 ## 6. Compare
 
