@@ -50,19 +50,38 @@ Fallback if that model isn't available: download the `bonsai` scene from the
 [Mip-NeRF 360 dataset](http://storage.googleapis.com/gresearch/refraw360/360_v2.zip)
 (~12GB zip, extract just `bonsai/`) directly onto the pod.
 
-## 4. Train
+## 4. Train, evaluate, and render
 
 ```bash
-ns-train splatfacto --data <bonsai_dir> colmap   # verify exact dataparser invocation/flags on pod --
-                                                   # nerfstudio's colmap dataparser expects
-                                                   # images/ + sparse/0/{cameras,images,points3D}.bin
+BONSAI_DATA=<bonsai_dir> runpod/run_bonsai.sh
 ```
 
-No custom config -- `splatfacto` defaults only, per MISSION.md's "don't
-overengineer."
+Runs `ns-train splatfacto ... colmap` (defaults only, per MISSION.md's "don't
+overengineer"), then `ns-eval` against the held-out test split, writing
+`results/psnr.json` (PSNR/SSIM/LPIPS) and `results/renders/` (the actual
+held-out-view images -- this is what "visibly sharp" in MISSION.md's Done
+criterion is judged against, not just the PSNR number).
 
-## 5. Compare
+Both `ns-train` and `ns-eval`/`ns-render` pick up CUDA automatically when
+available -- no device flag needed, nothing here should silently fall back to
+CPU on this GPU pod.
 
-Render a held-out view, compare against DynamicReconstruction's `core/splat.py`
-output on the same scene. Good PSNR here = bug is in DynamicReconstruction's
-training code. Still bad = bug is upstream of training (data prep/conversion).
+## 5. View the results
+
+Two ways, not mutually exclusive:
+
+- **Pull the renders down**: `runpodctl send results/` on the pod, then
+  `runpodctl receive <code>` locally (same tool used for the bonsai data in
+  step 3) -- or `scp -r`. Then just open `results/renders/` and
+  `results/psnr.json` locally.
+- **Interactive viewer**: `ns-viewer --load-config <config.yml>` on the pod
+  (path printed at the end of `run_bonsai.sh`), then either expose pod port
+  `7007` as a TCP port in the RunPod dashboard, or `ssh -L 7007:localhost:7007
+  <pod>` and open `http://localhost:7007`.
+
+## 6. Compare
+
+Held-out PSNR/SSIM/LPIPS (step 4) and the rendered views (step 5) against
+DynamicReconstruction's `core/splat.py` output on the same scene. Good PSNR
++ visibly sharp renders here = bug is in DynamicReconstruction's training
+code. Still bad = bug is upstream of training (data prep/conversion).

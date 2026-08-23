@@ -25,8 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 # which is the only method this mission uses -- see MISSION.md.
 COPY . .
 RUN pip install --upgrade pip setuptools && pip install -e .
+RUN chmod +x runpod/run_bonsai.sh
 
 # See SETUP-PLAN.md for the open risk (gsplat==1.4.0 pin vs. this base
 # image's torch 2.4.1+cu124) -- deliberately unresolved here, verify on pod.
 
+# ns-viewer's websocket (Viser) port, for looking at results interactively
+# instead of (or in addition to) runpod/run_bonsai.sh's static renders --
+# expose this as a pod TCP port when deploying, or SSH-tunnel it.
+EXPOSE 7007
+
+# Base image's own start script (SSH/Jupyter bring-up) -- training itself is
+# a manual `runpod/run_bonsai.sh` run over SSH, not part of container start,
+# per MISSION.md's "one comparison, not a service" scope.
 CMD ["/start.sh"]
