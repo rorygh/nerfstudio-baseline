@@ -38,8 +38,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 # (uninstall-distutils-installed-package) -- confirmed harmless to leave as
 # is, it's just a transitive Flask dep, nothing here depends on its version.
 COPY . .
+# Strip the local version tag (+cu124 etc.): pip's resolver needs a candidate
+# for the *exact* constraint string on some index, and only download.pytorch.org
+# hosts CUDA-tagged builds, not PyPI -- "no matching distributions available".
+# Per PEP 440, a bare `==2.4.1` constraint (no local segment) still matches an
+# installed `2.4.1+cu124`, so this keeps the already-installed build pinned
+# without pip needing to look it up anywhere.
 RUN pip install --upgrade pip setuptools && \
-    pip freeze | grep -E '^torch(vision|audio)?==' > /tmp/pinned-constraints.txt && \
+    pip freeze | grep -E '^torch(vision|audio)?==' | sed -E 's/\+[^=]*$//' > /tmp/pinned-constraints.txt && \
     echo "Pillow==10.4.0" >> /tmp/pinned-constraints.txt && \
     pip install -e . -c /tmp/pinned-constraints.txt --ignore-installed blinker
 RUN chmod +x runpod/run_bonsai.sh
