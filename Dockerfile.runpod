@@ -1,0 +1,32 @@
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+
+WORKDIR /opt/nerfstudio-baseline
+
+# COLMAP via a standalone micromamba env (conda-forge), same pattern proven
+# out in DynamicReconstruction's Dockerfile.runpod: Ubuntu 22.04's apt colmap
+# is an incompatible v3.x build, and libfaiss must be pinned to 1.10.0 (newer
+# conda-forge builds are ABI-incompatible with this colmap build). See
+# https://github.com/rorygh/DynamicReconstruction/blob/main/docs/architecture.md
+# for the full story. Wrapped as a script (not a plain symlink + global
+# LD_LIBRARY_PATH) from the start this time -- DynamicReconstruction hit a
+# real bug where a global LD_LIBRARY_PATH pointed sshd at conda's OpenSSL
+# instead of the system one, breaking SSH host-key generation.
+RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /usr/local/bin --strip-components=1 bin/micromamba && \
+    micromamba create -y -p /opt/colmap-env -c conda-forge colmap=4.0.4 "libfaiss=1.10.0=cpu_openblas*" openimageio && \
+    printf '#!/bin/bash\nexec env LD_LIBRARY_PATH="/opt/colmap-env/lib:$LD_LIBRARY_PATH" /opt/colmap-env/bin/colmap "$@"\n' > /usr/local/bin/colmap && \
+    chmod +x /usr/local/bin/colmap
+
+# ffmpeg for ns-process-data video input (not needed for the bonsai mission
+# itself -- Mip-NeRF 360 ships as photos -- but cheap to include).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Copy source and install nerfstudio in editable mode. No tiny-cuda-nn here:
+# it's only needed for NeRF methods (nerfacto/instant-ngp), not splatfacto,
+# which is the only method this mission uses -- see MISSION.md.
+COPY . .
+RUN pip install --upgrade pip setuptools && pip install -e .
+
+# See SETUP-PLAN.md for the open risk (gsplat==1.4.0 pin vs. this base
+# image's torch 2.4.1+cu124) -- deliberately unresolved here, verify on pod.
+
+CMD ["/start.sh"]
