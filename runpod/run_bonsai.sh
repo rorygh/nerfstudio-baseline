@@ -9,17 +9,24 @@ BONSAI_DATA="${BONSAI_DATA:-/workspace/data/bonsai}"
 OUTPUT_DIR="${OUTPUT_DIR:-/workspace/outputs}"
 RESULTS_DIR="${RESULTS_DIR:-/workspace/results}"
 
-if [[ ! -f "${BONSAI_DATA}/sparse/0/cameras.bin" ]]; then
-    echo "error: expected a COLMAP sparse model at ${BONSAI_DATA}/sparse/0/{cameras,images,points3D}.bin -- see SETUP-PLAN.md step 3" >&2
+# nerfstudio's colmap dataparser defaults to <data>/colmap/sparse/0, but the
+# official Mip-NeRF 360 zip (SETUP-PLAN.md's fallback data source) ships the
+# sparse model directly at <data>/sparse/0 -- detect which layout we've got.
+if [[ -f "${BONSAI_DATA}/colmap/sparse/0/cameras.bin" ]]; then
+    COLMAP_PATH="colmap/sparse/0"
+elif [[ -f "${BONSAI_DATA}/sparse/0/cameras.bin" ]]; then
+    COLMAP_PATH="sparse/0"
+else
+    echo "error: no COLMAP sparse model found under ${BONSAI_DATA} (checked colmap/sparse/0 and sparse/0) -- see SETUP-PLAN.md step 3" >&2
     exit 1
 fi
 
-echo "=== Training splatfacto on ${BONSAI_DATA} ==="
+echo "=== Training splatfacto on ${BONSAI_DATA} (colmap-path: ${COLMAP_PATH}) ==="
 ns-train splatfacto \
     --data "${BONSAI_DATA}" \
     --output-dir "${OUTPUT_DIR}" \
     --viewer.quit-on-train-completion True \
-    colmap
+    colmap --colmap-path "${COLMAP_PATH}"
 
 CONFIG="$(find "${OUTPUT_DIR}" -path '*/splatfacto/*/config.yml' -print0 | xargs -0 ls -t | head -n1)"
 if [[ -z "${CONFIG}" ]]; then

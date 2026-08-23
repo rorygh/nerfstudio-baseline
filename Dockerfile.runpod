@@ -23,12 +23,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 # Copy source and install nerfstudio in editable mode. No tiny-cuda-nn here:
 # it's only needed for NeRF methods (nerfacto/instant-ngp), not splatfacto,
 # which is the only method this mission uses -- see MISSION.md.
-COPY . .
-RUN pip install --upgrade pip setuptools && pip install -e .
+#
+# pyproject.toml's base deps are lower-bound-only (torch>=1.13.1,
+# Pillow>=10.3.0), so a plain `pip install -e .` upgrades this base image's
+# CUDA-matched torch to whatever's newest and breaks downstream: confirmed on
+# a live pod (runpod/pytorch template, not this exact base image, but same
+# failure mode applies here) it silently jumped torch to a build for a
+# different CUDA major version, and separately, newer Pillow removed/changed
+# the C-internals `pil_to_numpy` (nerfstudio/data/utils/data_utils.py) relies
+# on. Freeze torch/vision/audio to whatever this base image already ships
+# *before* installing, and pin Pillow to a version confirmed to still work.
+RUN pip install --upgrade pip setuptools && \
+    pip freeze | grep -E '^torch(vision|audio)?==' > /tmp/pinned-constraints.txt && \
+    echo "Pillow==10.4.0" >> /tmp/pinned-constraints.txt && \
+    pip install -e . -c /tmp/pinned-constraints.txt
 RUN chmod +x runpod/run_bonsai.sh
 
-# See SETUP-PLAN.md for the open risk (gsplat==1.4.0 pin vs. this base
-# image's torch 2.4.1+cu124) -- deliberately unresolved here, verify on pod.
+# gsplat==1.4.0 (pyproject.toml pin) turned out to be a pure-Python wheel
+# that JIT-compiles its CUDA kernels via torch's cpp_extension loader on
+# first use, keyed off whatever torch is active then -- so the base image's
+# torch/CUDA build matters at *train* time, not install time. Confirmed
+# working end-to-end (JIT compile + full splatfacto training run) against
+# torch 2.8.0+cu128 on an RTX 3090 pod; the exact torch/CUDA build in *this*
+# base image is still unverified -- check the JIT-compile step (right after
+# "Caching / undistorting train images") the first time you run
+# runpod/run_bonsai.sh on a freshly built image.
 
 # ns-viewer's websocket (Viser) port, for looking at results interactively
 # instead of (or in addition to) runpod/run_bonsai.sh's static renders --

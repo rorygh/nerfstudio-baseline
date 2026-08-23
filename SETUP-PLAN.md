@@ -1,24 +1,19 @@
-# Setup Plan (not yet executed -- run on the pod, not before)
+# Setup Plan
 
 ## 0. Pod
 
-Reuse the *exact same* RunPod pod already deployed for DynamicReconstruction
-(RTX 2000 Ada, 16GB VRAM, CUDA 12.4 driver -- see that repo's Dockerfile.runpod
-and its confirmed-working `nvidia-smi` output) rather than deploying a new
-one. Reasoning:
-
-- No `tiny-cuda-nn` in this mission (splatfacto only), so nerfstudio's usual
-  "match `TCNN_CUDA_ARCHITECTURES` to your GPU" gotcha doesn't apply here --
-  compute capability is a non-issue.
-- 16GB comfortably covers a single-object scene at `bonsai`'s scale for
-  `splatfacto` (same class of workload DynamicReconstruction already ran on
-  this hardware).
-- Reusing the same pod holds GPU/driver/CUDA fixed as a variable in the
-  comparison -- a difference in results can't be blamed on different
-  hardware.
-
-Only spin up a separate pod if VRAM turns out insufficient once actually
-running (unlikely at this scene scale).
+Original plan was to reuse DynamicReconstruction's exact pod (RTX 2000 Ada,
+16GB, CUDA 12.4) to hold hardware constant across the comparison. In
+practice, the pod actually used for the confirmed-working run below is a
+different one: a generic RunPod PyTorch template, RTX 3090 (24GB), driver
+CUDA 13.0 / nvcc 12.8, Ubuntu 24.04, Python 3.12, torch 2.8.0+cu128
+pre-installed -- not built from this repo's `Dockerfile.runpod` (no Docker
+available on the pod itself). Notably *not* the same GPU/CUDA as
+DynamicReconstruction's pod, so hardware is no longer held constant between
+the two -- worth keeping in mind if results are borderline instead of
+clearly good/bad. No `tiny-cuda-nn` involved either way (splatfacto only), so
+the usual `TCNN_CUDA_ARCHITECTURES`-vs-compute-capability gotcha doesn't
+apply.
 
 ## 1. Image
 
@@ -28,15 +23,41 @@ once `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets are set on *this* repo --
 they don't carry over from DynamicReconstruction). Deploy the pod from
 `rorygh/nerfstudio-baseline:latest`, same as DynamicReconstruction's pattern.
 
-## 2. Known open risk -- verify first, before anything else
+## 2. Environment setup -- verified issues and fixes
 
-`pyproject.toml` pins `gsplat==1.4.0`. The base image (`runpod/pytorch:2.4.0-
-py3.11-cuda12.4.1-devel-ubuntu22.04`) ships torch 2.4.1+cu124. Unknown until
-tested: whether a `gsplat==1.4.0` wheel exists for that exact torch/CUDA
-combo, or whether it needs a source build (slower, needs nvcc -- the base
-image is a `-devel` image so nvcc is present, but untested here). Check
-`pip install -e .`'s output during the image build (or interactively on the
-pod) before assuming the image built cleanly.
+Confirmed on the live pod described in step 0. All three bit regardless of
+which exact base image is used, since the root cause in each case is
+`pyproject.toml`'s dependencies being lower-bound-only:
+
+- **`pip install -e .` silently upgrades torch.** Base deps say
+  `torch>=1.13.1` with no upper bound, so pip grabbed the newest torch
+  available (a different CUDA major version than the pod's pre-installed,
+  driver-matched one), which broke `torchaudio` and left an unverified
+  torch/CUDA combo in place. Fix (baked into `Dockerfile.runpod`): capture
+  the base image's existing torch/torchvision/torchaudio versions into a
+  pip constraints file *before* running `pip install -e .`, then install
+  against that constraint so torch never moves.
+- **Newer Pillow breaks `pil_to_numpy`.** Base deps say `Pillow>=10.3.0`
+  with no upper bound; pip grabbed the latest, whose C-internals no longer
+  match what `nerfstudio/data/utils/data_utils.py`'s `pil_to_numpy` hooks
+  into (`Image._getencoder(...).setimage(...)` signature changed) --
+  `TypeError: function takes exactly 2 arguments (1 given)` on the very
+  first image load. Fix: pin `Pillow==10.4.0` (confirmed working) in the
+  same constraints file.
+- **`gsplat==1.4.0` is a pure-Python wheel**, not a prebuilt CUDA binary --
+  it JIT-compiles its CUDA kernels via torch's `cpp_extension` loader the
+  first time you actually train, keyed off whatever torch is active *then*.
+  So the install-time torch/CUDA match matters less than expected, but the
+  JIT-compile step (logged right after "Caching / undistorting train
+  images") is still worth watching on a freshly built image. Confirmed
+  working against torch 2.8.0+cu128 / RTX 3090.
+- **`torch.load` default flip in torch 2.6** (`weights_only` now defaults to
+  `True`) broke checkpoint loading in `nerfstudio/utils/eval_utils.py` and
+  `nerfstudio/engine/trainer.py` (`ns-eval` and checkpoint-resume both
+  failed with `UnpicklingError` on a `numpy._core.multiarray.scalar`
+  global). Fixed in this repo by passing `weights_only=False` explicitly at
+  all three call sites -- safe since these are always our own
+  self-generated checkpoints, never third-party ones.
 
 ## 3. Get bonsai data onto the pod
 
@@ -48,7 +69,11 @@ reasoning in DynamicReconstruction's `docs/pipeline-alternatives.md`.
 
 Fallback if that model isn't available: download the `bonsai` scene from the
 [Mip-NeRF 360 dataset](http://storage.googleapis.com/gresearch/refraw360/360_v2.zip)
-(~12GB zip, extract just `bonsai/`) directly onto the pod.
+(~12GB zip, extract just `bonsai/`) directly onto the pod. **Used for the
+confirmed-working run below** -- DynamicReconstruction's pod/data wasn't
+reachable from this one. Its sparse model lands at `<data>/sparse/0`, not
+nerfstudio's default `<data>/colmap/sparse/0` -- `run_bonsai.sh` detects
+which layout is present and passes the right `--colmap-path` automatically.
 
 ## 4. Train, evaluate, and render
 
